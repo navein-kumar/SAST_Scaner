@@ -1,0 +1,12 @@
+# Tools, rules, and vulnerability DBs fetched by install.sh (multi-GB, regenerable)
+bundle/
+
+# Scan outputs (may contain secret findings / target source paths)
+reports/
+
+# Runtime logs
+*.log
+
+# Python
+__pycache__/
+*.pyc
