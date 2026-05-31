@@ -198,7 +198,7 @@ def _find_pkg_line(lines, name):
     return 0
 
 
-def attach_snippets(findings, target, ctx=7, maxlen=300):
+def attach_snippets(findings, target, ctx=10, maxlen=300):
     """Read local source files to attach code evidence (lines around the finding).
 
     SAST/secret findings carry a source line. SCA (dependency) findings carry no

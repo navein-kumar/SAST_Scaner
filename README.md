@@ -1,6 +1,7 @@
-# offline-sast
+# SAST Scanner
 
-Fully **offline** SAST + SCA + secrets scanner for a local source folder.
+SAST + SCA + secrets scanner for a local source folder, built to run with **no
+network access**.
 
 Install once **with** internet; after that every scan runs **network-disabled** —
 built for air-gapped / internet-restricted environments where the Semgrep cloud
@@ -32,7 +33,7 @@ git-ignored, regenerable). Tool names: `semgrep opengrep codeql trivy depcheck g
 Optional: `NVD_API_KEY=xxxx ./install.sh` — greatly speeds up Dependency-Check's
 NVD data download.
 
-## Scan (offline) — one command
+## Scan — one command
 
 ```bash
 ./scan.sh /path/to/source
@@ -68,7 +69,7 @@ Written to `reports/<timestamp>/` (or your custom dir):
 
 ### report.html
 
-Single file, inline CSS/JS — **works offline**, no external assets. Filter by
+Single file, inline CSS/JS — **works air-gapped**, no external assets. Filter by
 severity / category / tool, free-text search, sortable columns. **Click any
 finding row** to expand its **code evidence**: the source lines around the issue
 with the offending line highlighted. SCA findings show the package's declaration
@@ -95,7 +96,7 @@ Severities are normalized across tools to: `CRITICAL HIGH MEDIUM LOW INFO UNKNOW
 
 ```
 install.sh            one-time online setup
-scan.sh               offline scan + merge + HTML (the only command you run)
+scan.sh               scan + merge + HTML (the only command you run)
 lib/merge_report.py   normalize 6 tools -> combined.json / csv / txt (+ snippets)
 lib/html_report.py    combined.json -> self-contained report.html
 bundle/               tools + rules + vuln DBs   (git-ignored)
