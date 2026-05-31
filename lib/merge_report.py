@@ -14,6 +14,7 @@ import csv
 import glob
 import json
 import os
+import re
 from collections import Counter
 
 SEV_ORDER = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "INFO": 4, "UNKNOWN": 5}
@@ -182,12 +183,17 @@ def _pkg_name(purl):
 
 
 def _find_pkg_line(lines, name):
-    """First line index (1-based) in a manifest/lockfile that declares the package."""
+    """First line index (1-based) in a manifest/lockfile that declares the package.
+
+    Format-agnostic: matches the package name as a whole token, so it works for
+    requirements.txt (django==4.2), JSON lockfiles ("django":), .csproj
+    (Include="..."), pom.xml (<artifactId>..</artifactId>), go.mod, etc.
+    """
     if not name:
         return 0
-    needles = ('"%s"' % name, "'%s'" % name, "/%s/" % name, "%s:" % name)
+    pat = re.compile(r"(?<![A-Za-z0-9_.\-])" + re.escape(name) + r"(?![A-Za-z0-9_.\-])", re.I)
     for i, line in enumerate(lines, 1):
-        if any(n in line for n in needles):
+        if pat.search(line):
             return i
     return 0
 
