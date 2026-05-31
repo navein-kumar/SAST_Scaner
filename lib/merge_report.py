@@ -31,6 +31,11 @@ def rel(path, target):
     if not path:
         return ""
     path = str(path).replace("file://", "")
+    # Tools emit paths either absolute or already relative to the scan root.
+    # Only re-relativize absolute paths; a relative path is already correct
+    # (os.path.relpath would otherwise resolve it against the CWD, not target).
+    if not os.path.isabs(path):
+        return os.path.normpath(path)
     try:
         return os.path.relpath(path, target)
     except ValueError:
@@ -160,6 +165,66 @@ def parse_gitleaks(data, target):
     return out
 
 
+def _read_lines(path, cache):
+    if path not in cache:
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                cache[path] = fh.read().splitlines()
+        except OSError:
+            cache[path] = None
+    return cache[path]
+
+
+def _pkg_name(purl):
+    """Bare package name from a purl-ish string: pkg:npm/babel-traverse -> babel-traverse."""
+    name = str(purl or "").rsplit("/", 1)[-1]
+    return name.split("@", 1)[0].strip()
+
+
+def _find_pkg_line(lines, name):
+    """First line index (1-based) in a manifest/lockfile that declares the package."""
+    if not name:
+        return 0
+    needles = ('"%s"' % name, "'%s'" % name, "/%s/" % name, "%s:" % name)
+    for i, line in enumerate(lines, 1):
+        if any(n in line for n in needles):
+            return i
+    return 0
+
+
+def attach_snippets(findings, target, ctx=3, maxlen=300):
+    """Read local source files to attach code evidence (lines around the finding).
+
+    SAST/secret findings carry a source line. SCA (dependency) findings carry no
+    line, so we locate the package's declaration inside the manifest/lockfile and
+    show that as evidence instead.
+    """
+    cache = {}
+    for fd in findings:
+        fd["snippet"] = []
+        fd["snippet_line"] = 0
+        fl = fd.get("file") or ""
+        # Dependency-Check appends "?<dep>" to the manifest path; strip it.
+        fl = fl.split("?", 1)[0]
+        try:
+            ln = int(fd.get("line"))
+        except (TypeError, ValueError):
+            ln = 0
+        if not fl:
+            continue
+        path = os.path.normpath(os.path.join(target, fl))
+        lines = _read_lines(path, cache)
+        if not lines:
+            continue
+        if ln <= 0 and fd.get("category") == "SCA":
+            ln = _find_pkg_line(lines, _pkg_name(fd.get("package")))
+        if ln <= 0 or ln > len(lines):
+            continue
+        s, e = max(1, ln - ctx), min(len(lines), ln + ctx)
+        fd["snippet"] = [[i, lines[i - 1][:maxlen]] for i in range(s, e + 1)]
+        fd["snippet_line"] = ln
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--semgrep")
@@ -191,13 +256,15 @@ def main():
 
     findings.sort(key=lambda x: (SEV_ORDER.get(x["severity"], 9), x["category"], x["tool"]))
 
+    attach_snippets(findings, a.target)
+
     cols = ["tool", "category", "severity", "rule_id", "title",
             "file", "line", "package", "version", "fix"]
 
     with open(a.out_json, "w", encoding="utf-8") as fh:
         json.dump(findings, fh, indent=2)
     with open(a.out_csv, "w", newline="", encoding="utf-8") as fh:
-        w = csv.DictWriter(fh, fieldnames=cols)
+        w = csv.DictWriter(fh, fieldnames=cols, extrasaction="ignore")
         w.writeheader()
         w.writerows(findings)
 

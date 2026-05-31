@@ -90,6 +90,19 @@ tr:hover td{{background:#f7fafd}}
 .title{{max-width:520px}}
 .rid{{color:#667;font-size:11px;word-break:break-all}}
 #count{{font-size:13px;color:#556;margin-left:auto}}
+tr.main{{cursor:pointer}}
+tr.main td:first-child{{position:relative;padding-left:24px}}
+.caret{{position:absolute;left:8px;color:#99a;font-size:10px;transition:transform .12s}}
+tr.main.open .caret{{transform:rotate(90deg)}}
+tr.detail td{{background:#0f1b2d;padding:0}}
+tr.detail.hidden{{display:none}}
+.evidence{{margin:0;padding:12px 16px;overflow-x:auto}}
+.evidence .path{{color:#9cc; font-family:ui-monospace,Consolas,monospace;font-size:12px;margin-bottom:6px;word-break:break-all}}
+pre.code{{margin:0;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;line-height:1.5;color:#dde}}
+pre.code .ln{{display:inline-block;width:46px;color:#5a6b85;text-align:right;padding-right:12px;user-select:none}}
+pre.code .row{{display:block;white-space:pre}}
+pre.code .row.hit{{background:#5a1a26;border-left:3px solid #d7263d;margin-left:-3px}}
+.noev{{color:#8aa;font-size:12px;padding:12px 16px;font-style:italic}}
 .footer{{padding:14px 24px;font-size:12px;color:#889;text-align:center}}
 </style></head>
 <body>
@@ -149,8 +162,8 @@ function render(){{
   $('#rows').innerHTML=rows.map(d=>{{
     const loc=esc(d.file)+(d.line!==''&&d.line!=null?':'+esc(d.line):'');
     const pkg=d.package?esc(d.package)+(d.version?' '+esc(d.version):''):'';
-    return `<tr>
-      <td><span class="sev" style="background:${{SEVC[d.severity]||'#777'}}">${{esc(d.severity)}}</span></td>
+    return `<tr class="main">
+      <td><span class="caret">&#9656;</span><span class="sev" style="background:${{SEVC[d.severity]||'#777'}}">${{esc(d.severity)}}</span></td>
       <td><span class="cat">${{esc(d.category)}}</span></td>
       <td><span class="tool">${{esc(d.tool)}}</span></td>
       <td class="rid">${{esc(d.rule_id)}}</td>
@@ -158,8 +171,27 @@ function render(){{
       <td class="mono">${{loc}}</td>
       <td class="mono">${{pkg}}</td>
       <td class="mono">${{esc(d.fix)}}</td>
-    </tr>`;}}).join('');
+    </tr>
+    <tr class="detail hidden"><td colspan="8">${{evidence(d)}}</td></tr>`;}}).join('');
 }}
+function evidence(d){{
+  const snip=d.snippet||[];
+  if(!snip.length){{
+    return '<div class="noev">No code evidence &mdash; '
+      +(d.category==='SCA'?'dependency/package finding (no source line).'
+        :'no source location available for this finding.')+'</div>';
+  }}
+  const hit=d.snippet_line;
+  const path=esc(d.file)+(d.line!==''&&d.line!=null?':'+esc(d.line):'');
+  const body=snip.map(([n,t])=>
+    `<span class="row${{n===hit?' hit':''}}"><span class="ln">${{n}}</span>${{esc(t)}}</span>`).join('');
+  return `<div class="evidence"><div class="path">${{path}}</div><pre class="code">${{body}}</pre></div>`;
+}}
+$('#rows').addEventListener('click',e=>{{
+  const tr=e.target.closest('tr.main'); if(!tr)return;
+  const det=tr.nextElementSibling;
+  if(det&&det.classList.contains('detail')){{det.classList.toggle('hidden');tr.classList.toggle('open');}}
+}});
 document.querySelectorAll('th').forEach(th=>th.onclick=()=>{{
   const k=th.dataset.k; if(sortK===k)sortAsc=!sortAsc; else{{sortK=k;sortAsc=true;}} render();
 }});
