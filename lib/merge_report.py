@@ -192,7 +192,7 @@ def _find_pkg_line(lines, name):
     return 0
 
 
-def attach_snippets(findings, target, ctx=3, maxlen=300):
+def attach_snippets(findings, target, ctx=7, maxlen=300):
     """Read local source files to attach code evidence (lines around the finding).
 
     SAST/secret findings carry a source line. SCA (dependency) findings carry no
@@ -218,6 +218,13 @@ def attach_snippets(findings, target, ctx=3, maxlen=300):
             continue
         if ln <= 0 and fd.get("category") == "SCA":
             ln = _find_pkg_line(lines, _pkg_name(fd.get("package")))
+        if ln <= 0 and fd.get("category") == "MISCONFIG":
+            # whole-file finding (e.g. missing USER / HEALTHCHECK): no single line,
+            # so show the config file itself as evidence (capped), no highlight.
+            end = min(len(lines), 40)
+            fd["snippet"] = [[i, lines[i - 1][:maxlen]] for i in range(1, end + 1)]
+            fd["snippet_line"] = 0
+            continue
         if ln <= 0 or ln > len(lines):
             continue
         s, e = max(1, ln - ctx), min(len(lines), ln + ctx)

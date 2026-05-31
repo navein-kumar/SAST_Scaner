@@ -77,6 +77,8 @@ header .meta{{font-size:13px;opacity:.8}}
 .chip b{{margin-left:6px;color:#0f1b2d}}
 .controls{{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px;align-items:center}}
 .controls input,.controls select{{padding:7px 10px;border:1px solid #cdd5df;border-radius:6px;font-size:13px}}
+.btn{{padding:7px 12px;border:1px solid #0f1b2d;background:#0f1b2d;color:#fff;border-radius:6px;font-size:13px;cursor:pointer}}
+.btn:hover{{background:#1c3354}}
 .controls input[type=search]{{flex:1;min-width:220px}}
 table{{width:100%;border-collapse:collapse;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.1);font-size:13px}}
 th,td{{padding:9px 12px;text-align:left;border-bottom:1px solid #eef1f4;vertical-align:top}}
@@ -103,6 +105,7 @@ pre.code .ln{{display:inline-block;width:46px;color:#5a6b85;text-align:right;pad
 pre.code .row{{display:block;white-space:pre}}
 pre.code .row.hit{{background:#5a1a26;border-left:3px solid #d7263d;margin-left:-3px}}
 .noev{{color:#8aa;font-size:12px;padding:12px 16px;font-style:italic}}
+.wholefile{{color:#e8852b;font-size:12px;margin:0 16px 8px;font-style:italic}}
 .footer{{padding:14px 24px;font-size:12px;color:#889;text-align:center}}
 </style></head>
 <body>
@@ -119,6 +122,8 @@ pre.code .row.hit{{background:#5a1a26;border-left:3px solid #d7263d;margin-left:
     <select id="fsev"><option value="">All severities</option></select>
     <select id="fcat"><option value="">All categories</option></select>
     <select id="ftool"><option value="">All tools</option></select>
+    <button id="expView" class="btn" title="Export the currently filtered rows to CSV">&#10515; Export view</button>
+    <button id="expAll" class="btn" title="Export every finding to CSV">&#10515; Export all</button>
     <span id="count"></span>
   </div>
   <table id="tbl">
@@ -141,8 +146,28 @@ function uniq(k){{return [...new Set(DATA.map(d=>d[k]).filter(x=>x!==''&&x!=null
 for(const s of Object.keys(SEVRANK)) if(DATA.some(d=>d.severity===s)) $('#fsev').add(new Option(s,s));
 for(const c of uniq('category')) $('#fcat').add(new Option(c,c));
 for(const t of uniq('tool')) $('#ftool').add(new Option(t,t));
-let sortK='severity', sortAsc=true;
+let sortK='severity', sortAsc=true, currentRows=[];
 function esc(s){{return (s==null?'':String(s)).replace(/[&<>]/g,c=>({{'&':'&amp;','<':'&lt;','>':'&gt;'}}[c]));}}
+const COLS=['tool','category','severity','rule_id','title','location','package','version','fix'];
+function csvCell(v){{v=(v==null?'':String(v));return /[",\\n\\r]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v;}}
+function locOf(d){{
+  const f=String(d.file||'').split('?')[0];
+  if(!f) return '';
+  let ln=(d.line!==''&&d.line!=null)?d.line:(d.snippet_line||0);
+  if(!ln) ln=1;            // whole-file finding (e.g. missing USER) -> anchor at top of file
+  return f+'#L'+ln;
+}}
+function exportCSV(rows,name){{
+  const lines=[COLS.join(',')];
+  for(const d of rows){{
+    const rec=Object.assign({{}},d,{{location:locOf(d)}});
+    lines.push(COLS.map(k=>csvCell(rec[k])).join(','));
+  }}
+  const blob=new Blob(['\\ufeff'+lines.join('\\r\\n')],{{type:'text/csv;charset=utf-8;'}});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob); a.download=name;
+  document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(a.href);
+}}
 function render(){{
   const q=$('#q').value.toLowerCase(), fs=$('#fsev').value, fc=$('#fcat').value, ft=$('#ftool').value;
   let rows=DATA.filter(d=>{{
@@ -158,6 +183,7 @@ function render(){{
     else{{x=(a[sortK]||'').toString().toLowerCase();y=(b[sortK]||'').toString().toLowerCase();}}
     if(x<y)return sortAsc?-1:1; if(x>y)return sortAsc?1:-1; return 0;
   }});
+  currentRows=rows;
   $('#count').textContent=rows.length+' / '+DATA.length+' shown';
   $('#rows').innerHTML=rows.map(d=>{{
     const loc=esc(d.file)+(d.line!==''&&d.line!=null?':'+esc(d.line):'');
@@ -182,10 +208,14 @@ function evidence(d){{
         :'no source location available for this finding.')+'</div>';
   }}
   const hit=d.snippet_line;
-  const path=esc(d.file)+(d.line!==''&&d.line!=null?':'+esc(d.line):'');
+  const lineNo=(d.line!==''&&d.line!=null)?d.line:(hit||'');
+  const path=esc(String(d.file).split('?')[0])+(lineNo!==''?':'+esc(lineNo):'');
+  const note=(hit===0||hit==='')
+    ?'<div class="wholefile">Whole-file finding &mdash; the issue is a missing/global setting, so no single line is highlighted. Full file shown below.</div>'
+    :'';
   const body=snip.map(([n,t])=>
     `<span class="row${{n===hit?' hit':''}}"><span class="ln">${{n}}</span>${{esc(t)}}</span>`).join('');
-  return `<div class="evidence"><div class="path">${{path}}</div><pre class="code">${{body}}</pre></div>`;
+  return `<div class="evidence"><div class="path">${{path}}</div>${{note}}<pre class="code">${{body}}</pre></div>`;
 }}
 $('#rows').addEventListener('click',e=>{{
   const tr=e.target.closest('tr.main'); if(!tr)return;
@@ -196,6 +226,9 @@ document.querySelectorAll('th').forEach(th=>th.onclick=()=>{{
   const k=th.dataset.k; if(sortK===k)sortAsc=!sortAsc; else{{sortK=k;sortAsc=true;}} render();
 }});
 ['#q','#fsev','#fcat','#ftool'].forEach(s=>$(s).addEventListener('input',render));
+const STAMP=new Date().toISOString().slice(0,10);
+$('#expView').onclick=()=>exportCSV(currentRows,'findings-filtered-'+STAMP+'.csv');
+$('#expAll').onclick=()=>exportCSV(DATA,'findings-all-'+STAMP+'.csv');
 render();
 </script>
 </body></html>"""
