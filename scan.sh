@@ -54,7 +54,18 @@ TARGET="$(cd "$TARGET" && pwd)"
 
 TS="$(date +%Y%m%d-%H%M%S)"
 OUT="${2:-$HERE/reports/$TS}"
-mkdir -p "$OUT"
+mkdir -p "$OUT" || die "cannot create output dir: $OUT (check permissions / disk space)"
+
+# Runtime prerequisites for the scanning machine (may differ from the install box).
+# python3 is required for the merge + HTML report (stdlib only). Fail fast here
+# instead of after every scanner has run.
+command -v python3 >/dev/null 2>&1 \
+  || die "python3 not found — required for the merge/report step. Install it (e.g. sudo apt-get install -y python3) and re-run."
+# Verify the output destination is actually writable before doing any work.
+if ! ( : > "$OUT/.wtest" ) 2>/dev/null; then
+  die "output dir not writable: $OUT (check permissions / disk space)"
+fi
+rm -f "$OUT/.wtest"
 
 log "Target : $TARGET"
 log "Output : $OUT"
@@ -155,14 +166,21 @@ else skip "trivy"; echo '{"Results":[]}' > "$OUT/trivy.json"; fi
 # 5. SCA -- OWASP Dependency-Check (offline, --noupdate)
 # ===========================================================================
 if [ -x "$DEPCHECK" ] && [ -z "${SKIP_DEPCHECK:-}" ]; then
-  log "[SCA] OWASP dependency-check (offline) ..."
-  "$DEPCHECK" --scan "$TARGET" --noupdate \
-    --data "$BUNDLE/dependency-check/data" \
-    --format JSON --out "$OUT" --prettyPrint >/dev/null 2>"$OUT/depcheck.err" \
-    || warn "dependency-check non-zero (see depcheck.err)"
-  [ -f "$OUT/dependency-check-report.json" ] && mv "$OUT/dependency-check-report.json" "$OUT/depcheck.json"
-  [ -f "$OUT/depcheck.json" ] || echo '{"dependencies":[]}' > "$OUT/depcheck.json"
-  ok "-> depcheck.json"
+  if ! command -v java >/dev/null 2>&1; then
+    # Dependency-Check is a Java app; without a JRE it can't run. Skip cleanly
+    # so the rest of the scan + merge still completes.
+    warn "[SCA] dependency-check skipped: Java (JRE 11+) not found on this machine"
+    echo '{"dependencies":[]}' > "$OUT/depcheck.json"
+  else
+    log "[SCA] OWASP dependency-check (offline) ..."
+    "$DEPCHECK" --scan "$TARGET" --noupdate \
+      --data "$BUNDLE/dependency-check/data" \
+      --format JSON --out "$OUT" --prettyPrint >/dev/null 2>"$OUT/depcheck.err" \
+      || warn "dependency-check non-zero (see depcheck.err)"
+    [ -f "$OUT/dependency-check-report.json" ] && mv "$OUT/dependency-check-report.json" "$OUT/depcheck.json"
+    [ -f "$OUT/depcheck.json" ] || echo '{"dependencies":[]}' > "$OUT/depcheck.json"
+    ok "-> depcheck.json"
+  fi
 else skip "dependency-check"; echo '{"dependencies":[]}' > "$OUT/depcheck.json"; fi
 
 # ===========================================================================

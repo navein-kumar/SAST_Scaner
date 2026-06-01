@@ -179,9 +179,13 @@ preflight() {  # preflight <requested tool list...>
   command -v python3 >/dev/null 2>&1 || missing+=("python3")
   [ "$need_git"   -eq 1 ] && ! command -v git   >/dev/null 2>&1 && missing+=("git")
   [ "$need_unzip" -eq 1 ] && ! command -v unzip >/dev/null 2>&1 && missing+=("unzip")
-  # python venv module (the classic "pip/venv not found" on fresh Debian/Ubuntu)
+  # python venv + pip (the classic "pip/venv not found" on fresh Debian/Ubuntu).
+  # NB: `venv --help` can succeed while pip is still unavailable, so we also
+  # require the ensurepip module that bootstraps pip inside the venv.
   if [ "$need_venv" -eq 1 ] && command -v python3 >/dev/null 2>&1; then
-    python3 -m venv --help >/dev/null 2>&1 || missing+=("venv")
+    if ! python3 -m venv --help >/dev/null 2>&1 || ! python3 -c 'import ensurepip' >/dev/null 2>&1; then
+      missing+=("venv")
+    fi
   fi
 
   if [ ${#missing[@]} -gt 0 ]; then
@@ -203,9 +207,15 @@ preflight() {  # preflight <requested tool list...>
     [ "$need_git"   -eq 1 ] && ! command -v git   >/dev/null 2>&1 && still+=("git")
     [ "$need_unzip" -eq 1 ] && ! command -v unzip >/dev/null 2>&1 && still+=("unzip")
     [ "$need_venv"  -eq 1 ] && command -v python3 >/dev/null 2>&1 && \
-      { python3 -m venv --help >/dev/null 2>&1 || still+=("venv"); }
+      { python3 -m venv --help >/dev/null 2>&1 && python3 -c 'import ensurepip' >/dev/null 2>&1 || still+=("venv"); }
     [ ${#still[@]} -gt 0 ] && die_with_hint "${still[@]}"
     ok "prerequisites installed"
+  fi
+
+  # ---- python version sanity (Semgrep needs 3.8+) -------------------------
+  if [ "$need_venv" -eq 1 ] && command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3,8) else 1)' 2>/dev/null \
+      || warn "python3 is older than 3.8 ($(python3 -V 2>&1)); Semgrep install may fail."
   fi
 
   # ---- Java is SOFT: only depcheck needs it; never blocks the rest --------
@@ -301,6 +311,7 @@ install_codeql() {
   fetch "$url" "$TMP/codeql-bundle.tar.gz"
   rm -rf "$BUNDLE/codeql"
   tar -xzf "$TMP/codeql-bundle.tar.gz" -C "$BUNDLE"   # extracts to $BUNDLE/codeql
+  rm -f "$TMP/codeql-bundle.tar.gz"                   # reclaim the ~hundreds of MB
   ln -sf "$BUNDLE/codeql/codeql" "$BIN/codeql"
   ok "codeql: $("$BIN/codeql" version --format=terse 2>/dev/null)"
 }
@@ -314,6 +325,7 @@ install_trivy() {
   fetch "https://github.com/aquasecurity/trivy/releases/download/${tag}/${tgz}" \
     "$TMP/$tgz"
   tar -xzf "$TMP/$tgz" -C "$BIN" trivy && chmod +x "$BIN/trivy"
+  rm -f "$TMP/$tgz"
   ok "trivy: $("$BIN/trivy" --version 2>/dev/null | head -1)"
   log "Trivy offline DBs ..."
   "$BIN/trivy" --cache-dir "$TRIVY_CACHE" fs --download-db-only
@@ -335,6 +347,7 @@ install_gitleaks() {
   fetch "https://github.com/gitleaks/gitleaks/releases/download/${tag}/${tgz}" \
     "$TMP/$tgz"
   tar -xzf "$TMP/$tgz" -C "$BIN" gitleaks && chmod +x "$BIN/gitleaks"
+  rm -f "$TMP/$tgz"
   ok "gitleaks: $("$BIN/gitleaks" version 2>/dev/null)"
 }
 
@@ -353,6 +366,7 @@ install_depcheck() {
     "$TMP/$zip"
   rm -rf "$BUNDLE/dependency-check"
   ( cd "$BUNDLE" && unzip -q "$TMP/$zip" )    # -> $BUNDLE/dependency-check
+  rm -f "$TMP/$zip"
   chmod +x "$BUNDLE/dependency-check/bin/dependency-check.sh"
   ok "dependency-check: installed"
 
