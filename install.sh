@@ -70,6 +70,30 @@ fetch_stdout() {  # fetch <url> -> stdout
   esac
 }
 
+# Move a freshly downloaded/extracted file INTO the bin dir atomically.
+# Writing binaries in-place (curl -o "$BIN/tool") fails with "failure writing to
+# output destination" (curl error 23) when the target already exists read-only,
+# is owned by root from an earlier `sudo ./install.sh`, or is busy (ETXTBSY).
+# Downloading to scratch and moving over it avoids all three.
+safe_mv() {  # safe_mv <src> <dest>
+  local src="$1" dest="$2"
+  chmod +x "$src" 2>/dev/null || true
+  if ! { rm -f "$dest" 2>/dev/null; mv -f "$src" "$dest"; } 2>/dev/null; then
+    die "cannot write $dest
+      The bundle dir is probably owned by root from an earlier 'sudo ./install.sh'.
+      Fix it, then re-run WITHOUT sudo:
+          sudo rm -rf \"$BUNDLE\" && ./install.sh"
+  fi
+}
+
+place_binary() {  # place_binary <url> <dest>   (download to scratch, then move in)
+  local url="$1" dest="$2" tmp
+  tmp="$TMP/$(basename "$dest").download"
+  rm -f "$tmp"
+  fetch "$url" "$tmp"
+  safe_mv "$tmp" "$dest"
+}
+
 # ---- package manager detection --------------------------------------------
 PKG=""; PKG_INSTALL=""; SUDO=""
 detect_pkg_mgr() {
@@ -166,11 +190,21 @@ preflight() {  # preflight <requested tool list...>
     esac
   done
 
-  # ---- writability of the output destination ------------------------------
-  if ! ( : > "$TMP/.wtest" ) 2>/dev/null; then
-    die "Cannot write to bundle dir: $TMP  (check permissions / disk space)"
+  # ---- writability of the bundle (download + bin dirs) --------------------
+  # Re-create in case the top-level mkdir was a no-op, and fail early with a
+  # clear fix instead of a cryptic curl "failure writing to output" mid-download.
+  if ! mkdir -p "$BIN" "$TRIVY_CACHE" "$TMP" 2>/dev/null; then
+    die "cannot create bundle dirs under $BUNDLE
+      If it was created by an earlier 'sudo ./install.sh':  sudo rm -rf \"$BUNDLE\" && ./install.sh"
   fi
-  rm -f "$TMP/.wtest"
+  local d
+  for d in "$TMP" "$BIN"; do
+    if ! ( : > "$d/.wtest" ) 2>/dev/null; then
+      die "cannot write to $d  (no permission / disk full)
+      If the bundle is owned by root from an earlier 'sudo ./install.sh':  sudo rm -rf \"$BUNDLE\" && ./install.sh"
+    fi
+    rm -f "$d/.wtest"
+  done
 
   # ---- gather missing HARD deps (block the whole install) -----------------
   local missing=()
@@ -261,9 +295,47 @@ TOOLS=("$@")
 preflight "${TOOLS[@]}"
 echo
 
-gh_latest() {  # $1 = owner/repo  -> latest tag
-  fetch_stdout "https://api.github.com/repos/$1/releases/latest" \
-    | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/'
+gh_latest() {  # $1 = owner/repo  -> latest tag (or empty)
+  local repo="$1" tag=""
+  # Method 1 (preferred): follow the /releases/latest redirect and read the
+  # final .../tag/<TAG> URL. This is a plain web request, so it is NOT subject
+  # to the 60-req/hr unauthenticated API rate limit that returns HTTP 403 and
+  # used to leave the tag empty -> malformed download URL -> 404 / write error.
+  if [ "$DL" = "curl" ]; then
+    tag="$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
+            "https://github.com/$repo/releases/latest" 2>/dev/null \
+            | sed -nE 's#.*/releases/tag/([^/?[:space:]]+).*#\1#p')"
+  elif [ "$DL" = "wget" ]; then
+    tag="$(wget -q --max-redirect=10 -S --spider \
+            "https://github.com/$repo/releases/latest" 2>&1 \
+            | sed -nE 's#.*[Ll]ocation:.*/releases/tag/([^/?[:space:]]+).*#\1#p' | tail -1)"
+  fi
+  # Method 2 (fallback): the API. Honour GITHUB_TOKEN to lift the rate limit.
+  if [ -z "$tag" ]; then
+    local auth=""
+    [ -n "${GITHUB_TOKEN:-}" ] && auth="Authorization: Bearer $GITHUB_TOKEN"
+    if [ "$DL" = "curl" ]; then
+      tag="$(curl -fsSL ${auth:+-H "$auth"} \
+              "https://api.github.com/repos/$repo/releases/latest" 2>/dev/null \
+              | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')"
+    else
+      tag="$(wget -q ${auth:+--header="$auth"} -O- \
+              "https://api.github.com/repos/$repo/releases/latest" 2>/dev/null \
+              | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')"
+    fi
+  fi
+  printf '%s' "$tag"
+}
+
+latest_or_die() {  # $1 = owner/repo   $2 = human name  -> tag, or aborts
+  local t; t="$(gh_latest "$1")"
+  if [ -z "$t" ]; then
+    die "could not resolve the latest $2 release tag.
+      GitHub is likely rate-limiting this IP (HTTP 403). Options:
+        - wait a few minutes and re-run, or
+        - raise the limit:   GITHUB_TOKEN=ghp_xxxxx ./install.sh $2"
+  fi
+  printf '%s' "$t"
 }
 
 # ===========================================================================
@@ -292,11 +364,10 @@ _clone_rules() {
 install_opengrep() {
   log "Opengrep ..."
   local tag asset
-  tag="$(gh_latest opengrep/opengrep)"
+  tag="$(latest_or_die opengrep/opengrep opengrep)"
   asset="opengrep_${OG_ARCH}"
-  fetch "https://github.com/opengrep/opengrep/releases/download/${tag}/${asset}" \
+  place_binary "https://github.com/opengrep/opengrep/releases/download/${tag}/${asset}" \
     "$BIN/opengrep"
-  chmod +x "$BIN/opengrep"
   ok "opengrep: $("$BIN/opengrep" --version 2>/dev/null | head -1)"
   [ -d "$BUNDLE/semgrep-rules/.git" ] || _clone_rules
 }
@@ -306,7 +377,7 @@ install_codeql() {
   log "CodeQL CLI bundle (includes extractors + standard query packs) ..."
   # The *bundle* asset ships the CLI plus precompiled query packs => fully offline.
   local tag url
-  tag="$(gh_latest github/codeql-action)"
+  tag="$(latest_or_die github/codeql-action codeql)"
   url="https://github.com/github/codeql-action/releases/download/${tag}/codeql-bundle-linux64.tar.gz"
   fetch "$url" "$TMP/codeql-bundle.tar.gz"
   rm -rf "$BUNDLE/codeql"
@@ -320,12 +391,13 @@ install_codeql() {
 install_trivy() {
   log "Trivy ..."
   local tag ver tgz
-  tag="$(gh_latest aquasecurity/trivy)"; ver="${tag#v}"
+  tag="$(latest_or_die aquasecurity/trivy trivy)"; ver="${tag#v}"
   tgz="trivy_${ver}_Linux-${TRIVY_ARCH}.tar.gz"
   fetch "https://github.com/aquasecurity/trivy/releases/download/${tag}/${tgz}" \
     "$TMP/$tgz"
-  tar -xzf "$TMP/$tgz" -C "$BIN" trivy && chmod +x "$BIN/trivy"
+  tar -xzf "$TMP/$tgz" -C "$TMP" trivy
   rm -f "$TMP/$tgz"
+  safe_mv "$TMP/trivy" "$BIN/trivy"
   ok "trivy: $("$BIN/trivy" --version 2>/dev/null | head -1)"
   log "Trivy offline DBs ..."
   "$BIN/trivy" --cache-dir "$TRIVY_CACHE" fs --download-db-only
@@ -342,12 +414,13 @@ install_trivy() {
 install_gitleaks() {
   log "Gitleaks ..."
   local tag ver tgz
-  tag="$(gh_latest gitleaks/gitleaks)"; ver="${tag#v}"
+  tag="$(latest_or_die gitleaks/gitleaks gitleaks)"; ver="${tag#v}"
   tgz="gitleaks_${ver}_linux_${GL_ARCH}.tar.gz"
   fetch "https://github.com/gitleaks/gitleaks/releases/download/${tag}/${tgz}" \
     "$TMP/$tgz"
-  tar -xzf "$TMP/$tgz" -C "$BIN" gitleaks && chmod +x "$BIN/gitleaks"
+  tar -xzf "$TMP/$tgz" -C "$TMP" gitleaks
   rm -f "$TMP/$tgz"
+  safe_mv "$TMP/gitleaks" "$BIN/gitleaks"
   ok "gitleaks: $("$BIN/gitleaks" version 2>/dev/null)"
 }
 
@@ -360,7 +433,7 @@ install_depcheck() {
     return
   fi
   local tag ver zip
-  tag="$(gh_latest jeremylong/DependencyCheck)"; ver="${tag#v}"
+  tag="$(latest_or_die jeremylong/DependencyCheck depcheck)"; ver="${tag#v}"
   zip="dependency-check-${ver}-release.zip"
   fetch "https://github.com/jeremylong/DependencyCheck/releases/download/${tag}/${zip}" \
     "$TMP/$zip"

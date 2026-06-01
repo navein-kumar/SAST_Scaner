@@ -30,6 +30,15 @@ them yourself.
 Downloads every tool, ruleset, and vulnerability DB into `./bundle/` (multi-GB,
 git-ignored, regenerable). Tool names: `semgrep opengrep codeql trivy depcheck gitleaks`.
 
+> **Hitting "404 / failure writing to output destination"?** That's GitHub
+> rate-limiting this IP (anonymous API = 60 requests/hour, returns HTTP 403),
+> which left tool versions unresolved. The installer now resolves versions via
+> the release redirect (not the rate-limited API) and aborts clearly instead of
+> writing a broken file. If you still get rate-limited, pass a token:
+> ```bash
+> GITHUB_TOKEN=ghp_xxxxx ./install.sh
+> ```
+
 **Prerequisites are handled for you.** Before any download, `install.sh` runs a
 preflight that checks the OS prerequisites (`curl`/`wget`, `tar`, `git`, `unzip`,
 `python3` + `venv`/`pip`, and a JRE 17 for Dependency-Check) and **auto-installs**
