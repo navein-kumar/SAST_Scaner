@@ -30,6 +30,20 @@ them yourself.
 Downloads every tool, ruleset, and vulnerability DB into `./bundle/` (multi-GB,
 git-ignored, regenerable). Tool names: `semgrep opengrep codeql trivy depcheck gitleaks`.
 
+**Prerequisites are handled for you.** Before any download, `install.sh` runs a
+preflight that checks the OS prerequisites (`curl`/`wget`, `tar`, `git`, `unzip`,
+`python3` + `venv`/`pip`, and a JRE 17 for Dependency-Check) and **auto-installs**
+any that are missing via the detected package manager (`apt`/`dnf`/`yum`/`zypper`/
+`pacman`/`apk`/`brew`, using `sudo` when needed). If it can't auto-install, it
+prints the exact command to run and exits — no half-finished bundle.
+
+```bash
+SKIP_DEP_INSTALL=1 ./install.sh     # only check & print install commands; don't touch the system
+```
+
+Java is optional: if no usable JRE 11+ is found, only Dependency-Check is skipped —
+every other engine still installs and runs.
+
 Optional NVD API key — greatly speeds up Dependency-Check's NVD data download.
 Provide it either way:
 
@@ -119,3 +133,8 @@ reports/              scan outputs               (git-ignored)
 Linux x86_64 or arm64 · `python3` (stdlib only) · `bash` · internet **only** for
 `install.sh`. CodeQL uses `--build-mode=none`, so no compiler/build is needed for
 the scanned project.
+
+`install.sh`'s preflight installs the rest (`curl`/`wget`, `tar`, `git`, `unzip`,
+`python3-venv`/`pip`, JRE 17) on a fresh machine, so the only hard requirement is a
+shell with a supported package manager (or root/sudo to use it). Set
+`SKIP_DEP_INSTALL=1` to audit prerequisites without changing the system.
