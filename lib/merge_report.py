@@ -287,7 +287,7 @@ def main():
 
     L = []
     L.append("=" * 70)
-    L.append("  OFFLINE SAST / SCA / SECRETS SCAN  -  SUMMARY")
+    L.append("  SAST SCANNER  -  SAST / SCA / SECRETS SUMMARY")
     L.append("=" * 70)
     L.append(f"  Target        : {a.target}")
     L.append(f"  Total findings: {len(findings)}")

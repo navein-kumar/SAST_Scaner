@@ -30,8 +30,19 @@ them yourself.
 Downloads every tool, ruleset, and vulnerability DB into `./bundle/` (multi-GB,
 git-ignored, regenerable). Tool names: `semgrep opengrep codeql trivy depcheck gitleaks`.
 
-Optional: `NVD_API_KEY=xxxx ./install.sh` — greatly speeds up Dependency-Check's
-NVD data download.
+Optional NVD API key — greatly speeds up Dependency-Check's NVD data download.
+Provide it either way:
+
+```bash
+NVD_API_KEY=xxxx ./install.sh                  # one-off via env var
+cp .nvd_api_key.example .nvd_api_key           # or save it once:
+#   then edit .nvd_api_key and paste your real key (install.sh reads it automatically)
+```
+
+The repo ships a placeholder `.nvd_api_key.example` (contains `xxxx`). Copy it to
+`.nvd_api_key` and drop in your key. The env var wins if both are set. If the key
+is missing or rejected, install automatically falls back to slower keyless mode.
+The real `.nvd_api_key` is git-ignored, so your key is never committed.
 
 ## Scan — one command
 

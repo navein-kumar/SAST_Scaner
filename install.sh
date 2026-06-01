@@ -142,13 +142,30 @@ install_depcheck() {
   chmod +x "$BUNDLE/dependency-check/bin/dependency-check.sh"
   ok "dependency-check: installed"
 
-  log "Downloading NVD data (the slow part; use NVD_API_KEY to speed up) ..."
-  local key_args=()
-  [ -n "${NVD_API_KEY:-}" ] && key_args=(--nvdApiKey "$NVD_API_KEY")
-  "$BUNDLE/dependency-check/bin/dependency-check.sh" \
-      --updateonly --data "$BUNDLE/dependency-check/data" "${key_args[@]}" \
-    && ok "NVD data downloaded" \
-    || warn "NVD update incomplete (rate-limited?). Re-run install with NVD_API_KEY."
+  log "Downloading NVD data (the slow part; an NVD API key speeds it up a LOT) ..."
+
+  # Resolve the NVD API key: env var wins, else read the saved key file.
+  local nvd_key="${NVD_API_KEY:-}"
+  if [ -z "$nvd_key" ] && [ -f "$HERE/.nvd_api_key" ]; then
+    nvd_key="$(tr -d '[:space:]' < "$HERE/.nvd_api_key")"
+    [ -n "$nvd_key" ] && log "Using saved NVD API key from .nvd_api_key"
+  fi
+
+  local dc="$BUNDLE/dependency-check/bin/dependency-check.sh"
+  local data="$BUNDLE/dependency-check/data"
+
+  if [ -n "$nvd_key" ]; then
+    if "$dc" --updateonly --data "$data" --nvdApiKey "$nvd_key"; then
+      ok "NVD data downloaded (with API key)"
+      return
+    fi
+    warn "NVD update with API key failed (bad/expired key or rate-limited). Falling back to keyless mode ..."
+  fi
+
+  # Fallback: keyless default mode (slow, but works without a key).
+  "$dc" --updateonly --data "$data" \
+    && ok "NVD data downloaded (keyless mode)" \
+    || warn "NVD update incomplete (rate-limited?). Re-run ./install.sh depcheck to resume."
 }
 
 # ===========================================================================

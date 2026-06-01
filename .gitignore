@@ -7,6 +7,9 @@ reports/
 # Runtime logs
 *.log
 
+# Saved NVD API key (secret - never commit)
+.nvd_api_key
+
 # Python
 __pycache__/
 *.pyc
