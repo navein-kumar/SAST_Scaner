@@ -121,6 +121,12 @@ if [ -x "$CODEQL" ]; then
   else
     log "[SAST] codeql (langs: $langs) ..."
     merged_sarif="$OUT/codeql.sarif"; first=1; sariflist=()
+    # C# / Java extraction is memory-hungry; on small boxes it aborts with
+    # "exited abnormally (code 134) ... (core dumped)" = OOM. Let the user cap
+    # CodeQL's RAM and threads. Fewer threads also lowers peak memory.
+    #   CODEQL_RAM=4096 CODEQL_THREADS=2 ./scan.sh ...
+    CQ_RAM_ARG=(); [ -n "${CODEQL_RAM:-}" ] && CQ_RAM_ARG=(--ram="$CODEQL_RAM")
+    CQ_THREADS="${CODEQL_THREADS:-0}"
     IFS=',' read -ra LARR <<< "$langs"
     for lang in "${LARR[@]}"; do
       [ -z "$lang" ] && continue
@@ -128,16 +134,24 @@ if [ -x "$CODEQL" ]; then
       rm -rf "$db"
       log "  creating db for $lang (build-mode none) ..."
       if "$CODEQL" database create "$db" --language="$lang" --build-mode=none \
+            --threads="$CQ_THREADS" "${CQ_RAM_ARG[@]}" \
             --source-root="$TARGET" --overwrite >/dev/null 2>"$OUT/codeql-$lang.err"; then
         log "  analyzing $lang ..."
         "$CODEQL" database analyze "$db" \
           --format=sarif-latest --output="$OUT/codeql-$lang.sarif" \
-          --threads=0 "${lang}-security-and-quality.qls" \
+          --threads="$CQ_THREADS" "${CQ_RAM_ARG[@]}" "${lang}-security-and-quality.qls" \
           >/dev/null 2>>"$OUT/codeql-$lang.err" \
           && sariflist+=("$OUT/codeql-$lang.sarif") \
           || warn "  codeql analyze failed for $lang (see codeql-$lang.err)"
       else
-        warn "  codeql db create failed for $lang (see codeql-$lang.err)"
+        # Surface the common OOM case with an actionable hint.
+        if grep -q 'code 134\|core dumped\|OutOfMemory' "$OUT/codeql-$lang.err" 2>/dev/null; then
+          warn "  codeql db create CRASHED for $lang (likely out of memory)."
+          warn "    Retry with limits, e.g.:  CODEQL_RAM=4096 CODEQL_THREADS=2 ./scan.sh \"$TARGET\""
+          warn "    Or skip this language:    CODEQL_LANGS=\"\$(echo $langs | sed 's/$lang,\\?//;s/,\\$//')\" ./scan.sh \"$TARGET\""
+        else
+          warn "  codeql db create failed for $lang (see codeql-$lang.err)"
+        fi
       fi
     done
     # keep first sarif as the canonical codeql.sarif; merger reads codeql-*.sarif glob too
@@ -173,7 +187,12 @@ if [ -x "$DEPCHECK" ] && [ -z "${SKIP_DEPCHECK:-}" ]; then
     echo '{"dependencies":[]}' > "$OUT/depcheck.json"
   else
     log "[SCA] OWASP dependency-check (offline) ..."
+    # Disable every analyzer that phones home, or an air-gapped run errors with
+    # "Connect to https://ossindex.sonatype.org:443 ... failed" (OSS Index),
+    # plus Maven Central and the Node Audit service. CVE matching still works
+    # offline from the cached NVD data downloaded by install.sh.
     "$DEPCHECK" --scan "$TARGET" --noupdate \
+      --disableOssIndex --disableCentral --disableNodeAudit \
       --data "$BUNDLE/dependency-check/data" \
       --format JSON --out "$OUT" --prettyPrint >/dev/null 2>"$OUT/depcheck.err" \
       || warn "dependency-check non-zero (see depcheck.err)"

@@ -77,13 +77,26 @@ That's it. **No other steps.** One run does scan → merge → HTML report. It m
 **no network calls**.
 
 ```bash
-./scan.sh /path/to/source /custom/output/dir   # optional output dir
-CODEQL_LANGS=csharp,java ./scan.sh /path/to/source   # override language autodetect
-SKIP_DEPCHECK=1 ./scan.sh /path/to/source            # skip the slow Dependency-Check
+./scan.sh /path/to/source /custom/output/dir         # optional output dir
+CODEQL_LANGS=csharp,java ./scan.sh /path/to/source    # override language autodetect
+SKIP_DEPCHECK=1 ./scan.sh /path/to/source             # skip the slow Dependency-Check
+CODEQL_RAM=4096 CODEQL_THREADS=2 ./scan.sh /path/to/source   # cap CodeQL memory/threads
 ```
 
 CodeQL languages are autodetected from file extensions (csharp, java, javascript,
 python, go, cpp, ruby) unless `CODEQL_LANGS` is set.
+
+### Troubleshooting
+
+- **CodeQL `exited abnormally (code 134) ... (core dumped)`** — the C#/Java
+  database build ran **out of memory** (134 = SIGABRT). It's not a rules problem;
+  extraction crashes before any query runs. Cap memory/threads and retry:
+  `CODEQL_RAM=4096 CODEQL_THREADS=2 ./scan.sh <dir>`, give the box more RAM, or
+  drop the language via `CODEQL_LANGS`.
+- **Dependency-Check `Connect to https://ossindex.sonatype.org:443 ... failed`** —
+  fixed: the scan now disables every analyzer that needs the internet (OSS Index,
+  Maven Central, Node Audit). CVE matching still works offline from the cached NVD
+  data. (Pull the latest if you still see this.)
 
 ## Output
 
