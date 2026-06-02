@@ -137,9 +137,15 @@ if [ -x "$CODEQL" ]; then
             --threads="$CQ_THREADS" "${CQ_RAM_ARG[@]}" \
             --source-root="$TARGET" --overwrite >/dev/null 2>"$OUT/codeql-$lang.err"; then
         log "  analyzing $lang ..."
+        # Resolve the query suite to its LOCAL file inside the CodeQL bundle.
+        # Passing a bare suite name lets CodeQL fetch packs from ghcr.io; using
+        # the on-disk .qls + a local --search-path keeps analyze fully offline.
+        suite="$(find "$BUNDLE/codeql/qlpacks" -path "*${lang}-queries*/codeql-suites/${lang}-security-and-quality.qls" 2>/dev/null | sort | tail -1)"
+        [ -z "$suite" ] && suite="${lang}-security-and-quality.qls"   # fallback to name
         "$CODEQL" database analyze "$db" \
           --format=sarif-latest --output="$OUT/codeql-$lang.sarif" \
-          --threads="$CQ_THREADS" "${CQ_RAM_ARG[@]}" "${lang}-security-and-quality.qls" \
+          --search-path "$BUNDLE/codeql/qlpacks" \
+          --threads="$CQ_THREADS" "${CQ_RAM_ARG[@]}" "$suite" \
           >/dev/null 2>>"$OUT/codeql-$lang.err" \
           && sariflist+=("$OUT/codeql-$lang.sarif") \
           || warn "  codeql analyze failed for $lang (see codeql-$lang.err)"
