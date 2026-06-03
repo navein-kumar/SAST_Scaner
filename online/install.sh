@@ -283,15 +283,16 @@ preflight() {  # preflight <requested tool list...>
 # ---- arch ------------------------------------------------------------------
 RAW_ARCH="$(uname -m)"
 case "$RAW_ARCH" in
-  x86_64|amd64)  TRIVY_ARCH="64bit"; GL_ARCH="x64";   OG_ARCH="manylinux_x86";    CODEQL_OK=1 ;;
-  aarch64|arm64) TRIVY_ARCH="ARM64"; GL_ARCH="arm64"; OG_ARCH="manylinux_aarch64"; CODEQL_OK=1 ;;
+  x86_64|amd64)  TRIVY_ARCH="64bit"; GL_ARCH="x64";   OG_ARCH="manylinux_x86";    CODEQL_OK=1; TH_ARCH="amd64"; JRE_ARCH="x64" ;;
+  aarch64|arm64) TRIVY_ARCH="ARM64"; GL_ARCH="arm64"; OG_ARCH="manylinux_aarch64"; CODEQL_OK=1; TH_ARCH="arm64"; JRE_ARCH="aarch64" ;;
   *) die "unsupported architecture: $RAW_ARCH" ;;
 esac
 log "arch=$RAW_ARCH"
 
 # ---- requested tools + preflight (must run before any download) -----------
+# Order matters: flawfinder needs the semgrep venv; devskim needs dotnet.
 TOOLS=("$@")
-[ ${#TOOLS[@]} -eq 0 ] && TOOLS=(semgrep opengrep codeql trivy depcheck gitleaks)
+[ ${#TOOLS[@]} -eq 0 ] && TOOLS=(semgrep opengrep codeql dotnet devskim flawfinder cppcheck trivy depcheck jre gitleaks trufflehog)
 preflight "${TOOLS[@]}"
 echo
 
@@ -388,6 +389,120 @@ install_codeql() {
 }
 
 # ===========================================================================
+install_dotnet() {
+  # CodeQL's C# extractor invokes the `dotnet` CLI even in build-mode=none. Without
+  # it, C# DB creation crashes ("Missing dotnet CLI", exit 134). Ship a portable,
+  # self-contained .NET SDK inside the bundle so the air-gapped box needs nothing.
+  log "Portable .NET SDK (for CodeQL C# extraction) ..."
+  if [ -x "$BUNDLE/dotnet/dotnet" ]; then
+    ok "dotnet: $(DOTNET_CLI_TELEMETRY_OPTOUT=1 "$BUNDLE/dotnet/dotnet" --version 2>/dev/null)"
+    return
+  fi
+  local script="$TMP/dotnet-install.sh"
+  # Official Microsoft installer script; resolves + downloads the SDK tarball.
+  fetch "https://dot.net/v1/dotnet-install.sh" "$script" \
+    || fetch "https://dotnet.microsoft.com/download/dotnet/scripts/v1/dotnet-install.sh" "$script"
+  chmod +x "$script"
+  # LTS 8.0 SDK into the bundle. --no-path: don't touch the user's shell profile.
+  DOTNET_CLI_TELEMETRY_OPTOUT=1 bash "$script" \
+    --channel 8.0 --install-dir "$BUNDLE/dotnet" --no-path \
+    || die "dotnet SDK install failed (see output above)"
+  [ -x "$BUNDLE/dotnet/dotnet" ] || die "dotnet SDK install did not produce $BUNDLE/dotnet/dotnet"
+  ok "dotnet: $(DOTNET_CLI_TELEMETRY_OPTOUT=1 "$BUNDLE/dotnet/dotnet" --version 2>/dev/null)"
+}
+
+# ===========================================================================
+install_flawfinder() {
+  # flawfinder is pure Python; install it INTO the semgrep venv so it ships with
+  # the same relocatable interpreter. Reported under "semgrep" by the merger.
+  log "flawfinder (C/C++ SAST) into the semgrep venv ..."
+  if [ -x "$BUNDLE/semgrep-venv/bin/python3" ]; then
+    "$BUNDLE/semgrep-venv/bin/python3" -m pip install --quiet flawfinder \
+      && ok "flawfinder: $("$BUNDLE/semgrep-venv/bin/python3" -m flawfinder --version 2>/dev/null | head -1)" \
+      || warn "flawfinder install failed"
+  else
+    warn "flawfinder needs the semgrep venv -- run ./install.sh semgrep first"
+  fi
+}
+
+# ===========================================================================
+install_cppcheck() {
+  # Bundle the cppcheck binary + its non-glibc shared libs + cfg data so it runs
+  # with no system install (LD_LIBRARY_PATH). Reported under "opengrep".
+  log "cppcheck (C/C++ SAST, self-contained) ..."
+  command -v cppcheck >/dev/null 2>&1 || install_pkgs cppcheck || { warn "cannot install cppcheck via package manager"; return; }
+  local cc; cc="$(command -v cppcheck)"
+  rm -rf "$BUNDLE/cppcheck"; mkdir -p "$BUNDLE/cppcheck/lib"
+  cp -L "$cc" "$BUNDLE/cppcheck/cppcheck"
+  # copy every non-glibc shared lib the binary needs
+  ldd "$cc" 2>/dev/null | awk '/=> \//{print $3}' | while read -r l; do
+    case "$(basename "$l")" in
+      libc.so.*|libm.so.*|libdl.so.*|libpthread.so.*|ld-linux*|librt.so.*|libgcc_s.so.*) : ;;
+      *) cp -L "$l" "$BUNDLE/cppcheck/lib/" 2>/dev/null || true ;;
+    esac
+  done
+  # copy the cfg/platforms data dir (location varies by distro) NEXT TO the binary
+  local cfg=""
+  for d in /usr/lib/*/cppcheck/cfg /usr/share/cppcheck/cfg /usr/share/Cppcheck/cfg /usr/lib/cppcheck/cfg; do
+    [ -d "$d" ] && { cfg="$d"; break; }
+  done
+  if [ -n "$cfg" ]; then
+    cp -r "$cfg" "$BUNDLE/cppcheck/cfg"
+    cp -r "$(dirname "$cfg")/platforms" "$BUNDLE/cppcheck/platforms" 2>/dev/null || true
+    cp -r "$(dirname "$cfg")/addons"    "$BUNDLE/cppcheck/addons"    2>/dev/null || true
+  else
+    warn "cppcheck cfg dir not found; std-library checks may be reduced"
+  fi
+  ok "cppcheck: $(LD_LIBRARY_PATH="$BUNDLE/cppcheck/lib" "$BUNDLE/cppcheck/cppcheck" --version 2>/dev/null)"
+}
+
+# ===========================================================================
+install_devskim() {
+  # Microsoft DevSkim CLI (multi-language, strong C#). Installed as a dotnet tool
+  # into the bundle; runs on the bundled .NET runtime. Reported under "semgrep".
+  log "Microsoft DevSkim (multi-lang SAST, strong C#) ..."
+  if [ ! -x "$BUNDLE/dotnet/dotnet" ]; then
+    warn "DevSkim needs the bundled dotnet -- run ./install.sh dotnet first"
+    return
+  fi
+  rm -rf "$BUNDLE/devskim"
+  if DOTNET_ROOT="$BUNDLE/dotnet" DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1 \
+       "$BUNDLE/dotnet/dotnet" tool install --tool-path "$BUNDLE/devskim" Microsoft.CST.DevSkim.CLI >/dev/null 2>&1; then
+    ok "devskim: $(DOTNET_ROOT="$BUNDLE/dotnet" "$BUNDLE/devskim/devskim" --version 2>/dev/null | head -1)"
+  else
+    warn "devskim install failed"
+  fi
+}
+
+# ===========================================================================
+install_trufflehog() {
+  log "TruffleHog (secrets) ..."
+  local tag ver tgz
+  tag="$(latest_or_die trufflesecurity/trufflehog trufflehog)"; ver="${tag#v}"
+  tgz="trufflehog_${ver}_linux_${TH_ARCH}.tar.gz"
+  fetch "https://github.com/trufflesecurity/trufflehog/releases/download/${tag}/${tgz}" "$TMP/$tgz"
+  tar -xzf "$TMP/$tgz" -C "$TMP" trufflehog
+  rm -f "$TMP/$tgz"
+  safe_mv "$TMP/trufflehog" "$BIN/trufflehog"
+  ok "trufflehog: $("$BIN/trufflehog" --version 2>&1 | head -1)"
+}
+
+# ===========================================================================
+install_jre() {
+  # Portable Temurin JRE 17 so OWASP Dependency-Check runs even when the client
+  # box has old Java (e.g. Java 8) or none at all.
+  log "Portable JRE 17 (for OWASP Dependency-Check on any client) ..."
+  if [ -x "$BUNDLE/jre/bin/java" ]; then
+    ok "jre: $("$BUNDLE/jre/bin/java" -version 2>&1 | head -1)"; return
+  fi
+  fetch "https://api.adoptium.net/v3/binary/latest/17/ga/linux/${JRE_ARCH}/jre/hotspot/normal/eclipse" "$TMP/jre17.tar.gz"
+  rm -rf "$BUNDLE/jre"; mkdir -p "$BUNDLE/jre"
+  tar -xzf "$TMP/jre17.tar.gz" -C "$BUNDLE/jre" --strip-components=1
+  rm -f "$TMP/jre17.tar.gz"
+  [ -x "$BUNDLE/jre/bin/java" ] && ok "jre: $("$BUNDLE/jre/bin/java" -version 2>&1 | head -1)" || warn "jre install failed"
+}
+
+# ===========================================================================
 install_trivy() {
   log "Trivy ..."
   local tag ver tgz
@@ -475,6 +590,12 @@ for t in "${TOOLS[@]}"; do
     semgrep)  install_semgrep ;;
     opengrep) install_opengrep ;;
     codeql)   install_codeql ;;
+    dotnet)   install_dotnet ;;
+    devskim)  install_devskim ;;
+    flawfinder) install_flawfinder ;;
+    cppcheck) install_cppcheck ;;
+    jre)      install_jre ;;
+    trufflehog) install_trufflehog ;;
     trivy)    install_trivy ;;
     depcheck) install_depcheck ;;
     gitleaks) install_gitleaks ;;

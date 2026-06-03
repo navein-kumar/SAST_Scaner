@@ -1,14 +1,20 @@
-# Tools, rules, and vulnerability DBs fetched by install.sh (multi-GB, regenerable)
+# Bundles (multi-GB, regenerable by online/install.sh; shipped offline via the tar)
 bundle/
+**/bundle/
 
-# Scan outputs (may contain secret findings / target source paths)
+# The packaged air-gapped archive
+*.tar.gz
+
+# Scan outputs
 reports/
+**/reports/
 
 # Runtime logs
 *.log
 
-# Saved NVD API key (secret - never commit)
+# Saved NVD API key (secret)
 .nvd_api_key
+**/.nvd_api_key
 
 # Python
 __pycache__/
